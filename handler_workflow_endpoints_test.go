@@ -177,6 +177,64 @@ func TestAPIWorkflowListEndpoint(t *testing.T) {
 	require.NotContains(t, activeIDs, "wf-list-b", "wf-list-b is all completed; should be inactive")
 }
 
+// TestAPIWorkflowGetEndpoint_MetadataContract pins the wire-level shape of
+// task metadata so the frontend's lookup of metadata["river:workflow_id"] can
+// never silently regress again. The frontend derives the workflow ID from
+// this exact key when wiring the retry and cancel buttons; an undefined here
+// makes the buttons silently no-op (no toast, no error, no network request).
+func TestAPIWorkflowGetEndpoint_MetadataContract(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	endpoint, bundle := setupEndpoint(ctx, t, newWorkflowGetEndpoint)
+
+	workflowID := "wf-contract"
+	_ = insertWorkflowJobForTest(ctx, t, bundle, workflowID, "contract-test", "a", nil, rivertype.JobStateCompleted)
+	_ = insertWorkflowJobForTest(ctx, t, bundle, workflowID, "contract-test", "b", []string{"a"}, rivertype.JobStatePending)
+
+	resp, err := endpoint.Execute(ctx, &workflowGetRequest{ID: workflowID})
+	require.NoError(t, err)
+	require.Len(t, resp.Tasks, 2)
+
+	// Round-trip through JSON the same way the frontend will receive it.
+	wireBytes, err := json.Marshal(resp)
+	require.NoError(t, err)
+
+	var wire struct {
+		Tasks []struct {
+			Metadata map[string]json.RawMessage `json:"metadata"`
+		} `json:"tasks"`
+	}
+	require.NoError(t, json.Unmarshal(wireBytes, &wire))
+	require.Len(t, wire.Tasks, 2)
+
+	for i, task := range wire.Tasks {
+		var gotID, gotTask, gotName string
+		var gotDeps []string
+
+		raw, ok := task.Metadata["river:workflow_id"]
+		require.Truef(t, ok, "task %d: metadata missing river:workflow_id", i)
+		require.NoError(t, json.Unmarshal(raw, &gotID))
+		require.Equalf(t, workflowID, gotID, "task %d: river:workflow_id value mismatch", i)
+
+		raw, ok = task.Metadata["river:workflow_task"]
+		require.Truef(t, ok, "task %d: metadata missing river:workflow_task", i)
+		require.NoError(t, json.Unmarshal(raw, &gotTask))
+		require.NotEmptyf(t, gotTask, "task %d: river:workflow_task empty", i)
+
+		raw, ok = task.Metadata["river:workflow_name"]
+		require.Truef(t, ok, "task %d: metadata missing river:workflow_name", i)
+		require.NoError(t, json.Unmarshal(raw, &gotName))
+		require.Equalf(t, "contract-test", gotName, "task %d: river:workflow_name value mismatch", i)
+
+		if raw, ok := task.Metadata["river:workflow_deps"]; ok {
+			require.NoError(t, json.Unmarshal(raw, &gotDeps))
+		}
+		if i == 1 {
+			require.Equalf(t, []string{"a"}, gotDeps, "task %d: river:workflow_deps value mismatch", i)
+		}
+	}
+}
+
 func TestAPIWorkflowRetryEndpoint(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
