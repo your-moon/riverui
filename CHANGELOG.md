@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New OSS workflow endpoints under `/api/pro/workflows/*` matching the frontend WorkflowDiagram contract:
+  - `GET /api/pro/workflows` lists workflows aggregated by `river:workflow_id` metadata, with state-count summaries.
+  - `GET /api/pro/workflows/{id}` returns the workflow's full task list (powers the DAG view).
+  - `POST /api/pro/workflows/{id}/cancel` cancels every non-finalized task; running tasks stay running with `cancel_attempted_at` set.
+  - `POST /api/pro/workflows/{id}/retry` resets cancelled/discarded tasks per mode (`failed_only`, `failed_and_downstream`, `all`).
+- The `workflow_queries` extension is now advertised by default in the OSS bundle so workflow routes light up automatically.
+
 ## [v0.16.0] - 2026-05-19
 
 Version 0.16.0 includes support for the all new workflow engine in River Pro v0.24.0, including signals, timers, and greater introspection capabilities.

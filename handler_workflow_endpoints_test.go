@@ -109,3 +109,88 @@ func TestAPIWorkflowCancelEndpoint(t *testing.T) {
 	require.Equal(t, pending.ID, resp.CancelledJobs[0].ID)
 	require.Equal(t, "cancelled", resp.CancelledJobs[0].State)
 }
+
+func TestAPIWorkflowCancelEndpoint_LeavesRunningTasksRunning(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	endpoint, bundle := setupEndpoint(ctx, t, newWorkflowCancelEndpoint)
+
+	workflowID := "wf-cancel-running-api"
+	running := insertWorkflowJobForTest(ctx, t, bundle, workflowID, "running-test", "a", nil, rivertype.JobStateRunning)
+
+	resp, err := endpoint.Execute(ctx, &workflowCancelRequest{ID: workflowID})
+	require.NoError(t, err)
+	require.Len(t, resp.CancelledJobs, 1)
+	require.Equal(t, running.ID, resp.CancelledJobs[0].ID)
+	require.Equal(t, "running", resp.CancelledJobs[0].State, "running task must stay in running state")
+}
+
+func TestAPIWorkflowGetEndpoint_DepsSerializedAsArray(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	endpoint, bundle := setupEndpoint(ctx, t, newWorkflowGetEndpoint)
+
+	workflowID := "wf-deps-empty"
+	_ = insertWorkflowJobForTest(ctx, t, bundle, workflowID, "deps-test", "a", nil, rivertype.JobStateCompleted)
+
+	resp, err := endpoint.Execute(ctx, &workflowGetRequest{ID: workflowID})
+	require.NoError(t, err)
+	require.Len(t, resp.Tasks, 1)
+	require.NotNil(t, resp.Tasks[0].Deps, "Deps must never be nil (serializes to JSON null, breaks frontend)")
+	require.Equal(t, []string{}, resp.Tasks[0].Deps)
+
+	// Marshal to JSON and verify "deps":[] not "deps":null.
+	b, err := json.Marshal(resp)
+	require.NoError(t, err)
+	require.Contains(t, string(b), `"deps":[]`)
+	require.NotContains(t, string(b), `"deps":null`)
+}
+
+func TestAPIWorkflowListEndpoint(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	endpoint, bundle := setupEndpoint(ctx, t, newWorkflowListEndpoint)
+
+	// Insert two workflows with distinct IDs.
+	_ = insertWorkflowJobForTest(ctx, t, bundle, "wf-list-a", "alpha", "step1", nil, rivertype.JobStatePending)
+	_ = insertWorkflowJobForTest(ctx, t, bundle, "wf-list-a", "alpha", "step2", []string{"step1"}, rivertype.JobStatePending)
+	_ = insertWorkflowJobForTest(ctx, t, bundle, "wf-list-b", "beta", "only", nil, rivertype.JobStateCompleted)
+
+	// List all.
+	resp, err := endpoint.Execute(ctx, &workflowListRequest{})
+	require.NoError(t, err)
+	ids := make([]string, len(resp.Data))
+	for i, w := range resp.Data {
+		ids[i] = w.ID
+	}
+	require.Contains(t, ids, "wf-list-a")
+	require.Contains(t, ids, "wf-list-b")
+
+	// Filter active only — wf-list-a has pending tasks.
+	activeResp, err := endpoint.Execute(ctx, &workflowListRequest{State: "active"})
+	require.NoError(t, err)
+	activeIDs := make([]string, len(activeResp.Data))
+	for i, w := range activeResp.Data {
+		activeIDs[i] = w.ID
+	}
+	require.Contains(t, activeIDs, "wf-list-a", "wf-list-a has pending tasks; should be active")
+	require.NotContains(t, activeIDs, "wf-list-b", "wf-list-b is all completed; should be inactive")
+}
+
+func TestAPIWorkflowRetryEndpoint(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	endpoint, bundle := setupEndpoint(ctx, t, newWorkflowRetryEndpoint)
+
+	workflowID := "wf-retry-api"
+	_ = insertWorkflowJobForTest(ctx, t, bundle, workflowID, "retry-test", "a", nil, rivertype.JobStateDiscarded)
+	_ = insertWorkflowJobForTest(ctx, t, bundle, workflowID, "retry-test", "b", []string{"a"}, rivertype.JobStateCancelled)
+
+	resp, err := endpoint.Execute(ctx, &workflowRetryRequest{ID: workflowID, Mode: "failed_and_downstream"})
+	require.NoError(t, err)
+	require.Len(t, resp.RetriedJobs, 2)
+	for _, j := range resp.RetriedJobs {
+		require.NotEqual(t, "cancelled", j.State)
+		require.NotEqual(t, "discarded", j.State)
+	}
+}
