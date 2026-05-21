@@ -419,9 +419,12 @@ func buildWorkflowTask(row *rivertype.JobRow, workflowID string) (*workflowTaskS
 	if raw, ok := meta[metadataKeyWorkflowName]; ok {
 		_ = json.Unmarshal(raw, &workflowName)
 	}
-	var deps []string
+	deps := []string{}
 	if raw, ok := meta[metadataKeyWorkflowDeps]; ok {
 		_ = json.Unmarshal(raw, &deps)
+	}
+	if deps == nil {
+		deps = []string{}
 	}
 	ignoreBool := func(key string) bool {
 		raw, ok := meta[key]
